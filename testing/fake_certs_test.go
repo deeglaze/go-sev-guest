@@ -16,6 +16,7 @@ package testing
 
 import (
 	"crypto/x509"
+	"fmt"
 	"testing"
 	"time"
 
@@ -66,4 +67,5 @@ func TestCertificatesParse(t *testing.T) {
 	if !hasArk {
 		t.Errorf("fake certs missing ARK")
 	}
+	fmt.Println("Test nya")
 }

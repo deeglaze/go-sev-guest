@@ -1,0 +1,83 @@
+name: release
+
+on:
+  push:
+    branches:
+      - 'main'
+    tags:
+      - 'v*'
+  pull_request:
+
+jobs:
+  prepare:
+    strategy:
+      matrix:
+        go-version: [1.19.x]
+        os: [ubuntu-latest]
+
+    name: Release for (${{ matrix.os}}, Go ${{ matrix.go-version }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v3
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+      - shell: bash
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+      - id: cache
+        uses: actions/cache@v3
+        with:
+          path: dist/${{ matrix.os }}
+          key: ${{ matrix.go }}-${{ env.sha_short }}
+      - name: Build all packages
+        run: go build -v ./...
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v3
+        if: success() && startsWith(github.ref, 'refs/tags/') && steps.cache.outputs.cache-hit != 'true'
+        with:
+          version: latest
+          args: release --clean --split
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  release:
+    strategy:
+      matrix:
+        go-version: [1.19.x]
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v3
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      # copy the cashes from prepare
+      - shell: bash
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+      - uses: actions/cache@v3
+        with:
+          path: dist/linux
+          key: linux-${{ env.sha_short }}
+      # - uses: actions/cache@v3
+      #   with:
+      #     path: dist/darwin
+      #     key: darwin-${{ env.sha_short }}
+      # - uses: actions/cache@v3
+      #   with:
+      #     path: dist/windows
+      #     key: windows-${{ env.sha_short }}
+
+
+      # release
+      - uses: goreleaser/goreleaser-action@v3
+        with:
+          version: latest
+          args: continue --merge
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

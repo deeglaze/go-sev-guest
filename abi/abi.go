@@ -138,12 +138,45 @@ const (
 	ReportVersion3 = 3
 )
 
+// GUID is the byte ordering preferred by the AMD specifications for their provided GUID strings.
+type GUID [16]byte
+
+func (g GUID) String() string {
+	var gcopy [16]byte
+	copy(gcopy[:], g[:])
+	reorderUUID(gcopy[:])
+	return uuid.UUID(gcopy).String()
+}
+
+func reorderUUID(u []byte) {
+	u[0], u[1], u[2], u[3] = u[3], u[2], u[1], u[0]
+	u[4], u[5] = u[5], u[4]
+	u[6], u[7] = u[7], u[6]
+}
+
+// MustParseGUID returns the little endian ordering of the given GUID string.
+func MustParseGUID(s string) GUID {
+	u := uuid.MustParse(s)
+	reorderUUID(u[:])
+	return GUID(u)
+}
+
+// ParseGUID returns the little endian ordering of the given GUID string or a parse error.
+func ParseGUID(s string) (GUID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return GUID{}, err
+	}
+	reorderUUID(u[:])
+	return GUID(u), nil
+}
+
 // CertTableHeaderEntry defines an entry of the beginning of an extended attestation report which
 // points to a specific key's certificate.
 type CertTableHeaderEntry struct {
 	// GUID is one of VcekGUID, AskGUID, or ArkGUID to identify which key an offset/length corresponds
 	// to.
-	GUID uuid.UUID
+	GUID GUID
 	// Offset is the offset into the data pages passed to the extended get_report where the specified
 	// key's certificate resides.
 	Offset uint32
@@ -154,7 +187,7 @@ type CertTableHeaderEntry struct {
 // CertTableEntry represents both the GUID and whole Certificate contents denoted by the
 // CertTableHeaderEntry ABI struct.
 type CertTableEntry struct {
-	GUID    uuid.UUID
+	GUID    GUID
 	RawCert []byte
 }
 
@@ -169,11 +202,11 @@ type CertTable struct {
 // AskCert is the SEV format for AMD signing key certificates.
 type AskCert struct {
 	Version      uint32
-	KeyID        uuid.UUID
-	CertifyingID uuid.UUID // Equals KeyID if self-signed.
-	KeyUsage     uint32    // Table 111: 00 == Root signing key, 0x13 == SEV signing key.
-	PubExpSize   uint32    // Must be 2048 or 4096
-	ModulusSize  uint32    // Must be 2048 or 4096
+	KeyID        GUID
+	CertifyingID GUID   // Equals KeyID if self-signed.
+	KeyUsage     uint32 // Table 111: 00 == Root signing key, 0x13 == SEV signing key.
+	PubExpSize   uint32 // Must be 2048 or 4096
+	ModulusSize  uint32 // Must be 2048 or 4096
 	PubExp       []byte
 	Modulus      []byte
 	Signature    []byte
@@ -825,12 +858,14 @@ func (c *CertTable) Unmarshal(certs []byte) error {
 // GetByGUIDString returns the raw bytes for a certificate that matches a key identified by the
 // given GUID string.
 func (c *CertTable) GetByGUIDString(guid string) ([]byte, error) {
-	g, err := uuid.Parse(guid)
+	g, err := ParseGUID(guid)
 	if err != nil {
 		return nil, err
 	}
+	// For backwards compatibility with GCE, the search should also try RFC4122 byte ordering.
+	u := uuid.MustParse(guid)
 	for _, entry := range c.Entries {
-		if entry.GUID == g {
+		if entry.GUID == g || entry.GUID == u {
 			return entry.RawCert, nil
 		}
 	}
@@ -842,23 +877,23 @@ func CertsFromProto(chain *pb.CertificateChain) *CertTable {
 	c := &CertTable{}
 	if len(chain.GetArkCert()) != 0 {
 		c.Entries = append(c.Entries,
-			CertTableEntry{GUID: uuid.MustParse(ArkGUID), RawCert: chain.GetArkCert()})
+			CertTableEntry{GUID: MustParseGUID(ArkGUID), RawCert: chain.GetArkCert()})
 	}
 	if len(chain.GetAskCert()) != 0 {
 		c.Entries = append(c.Entries,
-			CertTableEntry{GUID: uuid.MustParse(AskGUID), RawCert: chain.GetAskCert()})
+			CertTableEntry{GUID: MustParseGUID(AskGUID), RawCert: chain.GetAskCert()})
 	}
 	if len(chain.GetVcekCert()) != 0 {
 		c.Entries = append(c.Entries,
-			CertTableEntry{GUID: uuid.MustParse(VcekGUID), RawCert: chain.GetVcekCert()})
+			CertTableEntry{GUID: MustParseGUID(VcekGUID), RawCert: chain.GetVcekCert()})
 	}
 	if len(chain.GetVlekCert()) != 0 {
 		c.Entries = append(c.Entries,
-			CertTableEntry{GUID: uuid.MustParse(VlekGUID), RawCert: chain.GetVlekCert()})
+			CertTableEntry{GUID: MustParseGUID(VlekGUID), RawCert: chain.GetVlekCert()})
 	}
 	for guid, cert := range chain.GetExtras() {
 		c.Entries = append(c.Entries,
-			CertTableEntry{GUID: uuid.MustParse(guid), RawCert: cert})
+			CertTableEntry{GUID: MustParseGUID(guid), RawCert: cert})
 	}
 	return c
 }
@@ -890,10 +925,10 @@ func (c *CertTable) Marshal() []byte {
 // so missing certificates aren't an error. If certificates are missing, you can
 // choose to fetch them yourself by calling verify.GetAttestationFromReport.
 func (c *CertTable) Proto() *pb.CertificateChain {
-	vcekGUID := uuid.MustParse(VcekGUID)
-	vlekGUID := uuid.MustParse(VlekGUID)
-	askGUID := uuid.MustParse(AskGUID)
-	arkGUID := uuid.MustParse(ArkGUID)
+	vcekGUID := MustParseGUID(VcekGUID)
+	vlekGUID := MustParseGUID(VlekGUID)
+	askGUID := MustParseGUID(AskGUID)
+	arkGUID := MustParseGUID(ArkGUID)
 	result := &pb.CertificateChain{Extras: make(map[string][]byte)}
 	for _, entry := range c.Entries {
 		switch {
@@ -1102,7 +1137,7 @@ func ExtendPlatformCertTable(data []byte, info *ExtraPlatformInfo) ([]byte, erro
 		return nil, fmt.Errorf("could not marshal ExtraPlatformInfo: %v", err)
 	}
 	certs.Entries = append(certs.Entries, CertTableEntry{
-		GUID:    uuid.MustParse(ExtraPlatformInfoGUID),
+		GUID:    MustParseGUID(ExtraPlatformInfoGUID),
 		RawCert: extra,
 	})
 	return certs.Marshal(), nil
